@@ -197,7 +197,7 @@ See [CONTRIBUTING.md - Development Environment](CONTRIBUTING.md#development-envi
 
 1. **Create feature branch**: `git checkout -b agent-tasks/{ISSUE_NUMBER}`
 2. **Implement changes** following the patterns below
-3. **Run quality checks** before committing (pre-commit hooks will run automatically)
+3. **Run `npm run check`** before committing (runs lint, format, type-check, tests, and package validation)
 4. **Commit with conventional commits**: `feat:`, `fix:`, `refactor:`, `docs:`, etc.
 5. **Push to remote**: `git push origin agent-tasks/{ISSUE_NUMBER}`
 6. **Create pull request** following [PR.md](docs/PR.md) guidelines
@@ -216,13 +216,15 @@ See [PR.md](docs/PR.md) for the complete guidance and template.
 
 ### 4. Quality Gates
 
-Pre-commit hooks automatically run:
-- Unit tests (via npm test)
-- Linting (via npm run lint)
-- Format checking (via npm run format:check)
-- Type checking (via npm run type-check)
+Run the full readiness check before committing:
 
-All checks must pass before commit is allowed.
+```bash
+npm run check              # Runs lint, format, type-check, tests, and package validation
+```
+
+This is the main quality gate — it runs all linting, formatting, type checking, test coverage, browser bundle check, and package validation in one command. Always run this before pushing.
+
+Pre-commit hooks also run automatically on commit if configured (via husky), covering tests, linting, formatting, and type checking.
 
 ### 5. Testing Guidelines
 
@@ -729,7 +731,7 @@ When adding or modifying dependencies, you **MUST** follow the guidelines in [do
 - Put unit tests in separate `tests/` directory (use `src/**/__tests__/**`)
 - Skip documentation for exported functions
 - Use semicolons (Prettier will remove them)
-- Commit without running pre-commit hooks
+- Commit without running `npm run check`
 - Ignore linting errors
 - Skip type checking
 - Use implicit return types
@@ -770,7 +772,7 @@ If TypeScript compilation fails:
    - Refactor while keeping tests green
 3. **Use existing patterns** as reference
 4. **Document as you go** with TSDoc comments
-5. **Run all checks** before committing (pre-commit hooks will enforce this)
+5. **Run `npm run check`** before committing (pre-commit hooks also enforce this)
 
 
 ### Writing code
