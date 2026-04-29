@@ -73,6 +73,10 @@
     "./vended-plugins/skills": {
       "types": "./dist/src/vended-plugins/skills/index.d.ts",
       "default": "./dist/src/vended-plugins/skills/index.js"
+    },
+    "./vended-tools/file-read": {
+      "types": "./dist/src/vended-tools/file-read/index.d.ts",
+      "default": "./dist/src/vended-tools/file-read/index.js"
     }
   },
   "scripts": {
