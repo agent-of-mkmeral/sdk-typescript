@@ -3,10 +3,31 @@ import { z } from 'zod'
 import type { IFileReader } from './types.js'
 import { promises as fs } from 'fs'
 import * as path from 'path'
+import { ImageBlock, DocumentBlock } from '../../types/media.js'
+import type { ImageFormat, DocumentFormat } from '../../mime.js'
+import type { JSONValue } from '../../types/json.js'
 
 const SNIPPET_LINES = 4
 const DEFAULT_MAX_FILE_SIZE = 1048576 // 1MB
+const DEFAULT_MAX_BINARY_FILE_SIZE = 20971520 // 20MB for images/documents
 const MAX_DIRECTORY_DEPTH = 2
+
+const IMAGE_EXTENSIONS: Record<string, ImageFormat> = {
+  '.png': 'png',
+  '.jpg': 'jpeg',
+  '.jpeg': 'jpeg',
+  '.gif': 'gif',
+  '.webp': 'webp',
+}
+
+const DOCUMENT_EXTENSIONS: Record<string, DocumentFormat> = {
+  '.pdf': 'pdf',
+  '.csv': 'csv',
+  '.doc': 'doc',
+  '.docx': 'docx',
+  '.xls': 'xls',
+  '.xlsx': 'xlsx',
+}
 
 /**
  * Zod schema for file editor input validation.
@@ -43,7 +64,8 @@ class TextFileReader implements IFileReader {
  * File editor tool for viewing, creating, and editing files programmatically.
  *
  * Provides commands for viewing files/directories, creating files, string replacement,
- * and line insertion.
+ * and line insertion. The view command supports images (png, jpg, gif, webp) and
+ * documents (pdf, csv, doc, docx, xls, xlsx) by returning appropriate content blocks.
  *
  * @example
  * ```typescript
@@ -56,6 +78,8 @@ class TextFileReader implements IFileReader {
  * })
  *
  * await agent.invoke('View the file /tmp/test.txt')
+ * await agent.invoke('View the image /tmp/screenshot.png')
+ * await agent.invoke('View the PDF /tmp/report.pdf')
  * await agent.invoke('Create a file /tmp/notes.txt with content "Hello World"')
  * await agent.invoke('Replace "Hello" with "Hi" in /tmp/notes.txt')
  * ```
@@ -63,39 +87,33 @@ class TextFileReader implements IFileReader {
 export const fileEditor = tool({
   name: 'fileEditor',
   description:
-    'Filesystem editor tool for viewing, creating, and editing files. Supports view (with line ranges), create, str_replace, and insert operations. Files must use absolute paths.',
+    'Filesystem editor tool for viewing, creating, and editing files. Supports view (with line ranges for text, ' +
+    'or image/document content blocks for binary files like png, jpg, gif, webp, pdf, csv, doc, docx, xls, xlsx), ' +
+    'create, str_replace, and insert operations. Files must use absolute paths.',
   inputSchema: fileEditorInputSchema,
-  callback: async (input, context) => {
+  callback: async (input, context): Promise<JSONValue> => {
     if (!context) {
       throw new Error('Tool context is required for file editor operations')
     }
 
     const fileReader = new TextFileReader()
 
-    let result: string
-
     switch (input.command) {
       case 'view':
-        result = await handleView(input.path, input.view_range, fileReader)
-        break
+        return (await handleView(input.path, input.view_range, fileReader)) as unknown as JSONValue
 
       case 'create':
-        result = await handleCreate(input.path, input.file_text!)
-        break
+        return await handleCreate(input.path, input.file_text!)
 
       case 'str_replace':
-        result = await handleStrReplace(input.path, input.old_str!, input.new_str, fileReader)
-        break
+        return await handleStrReplace(input.path, input.old_str!, input.new_str, fileReader)
 
       case 'insert':
-        result = await handleInsert(input.path, input.insert_line!, input.new_str!, fileReader)
-        break
+        return await handleInsert(input.path, input.insert_line!, input.new_str!, fileReader)
 
       default:
         throw new Error(`Unknown command: ${input.command}`)
     }
-
-    return result
   },
 })
 
@@ -206,13 +224,73 @@ async function listDirectory(dirPath: string): Promise<string> {
 }
 
 /**
+ * Detects if a file is an image based on its extension.
+ *
+ * @param filePath - Path to check
+ * @returns Image format if detected, undefined otherwise
+ */
+function detectImageFormat(filePath: string): ImageFormat | undefined {
+  const ext = path.extname(filePath).toLowerCase()
+  return IMAGE_EXTENSIONS[ext]
+}
+
+/**
+ * Detects if a file is a document based on its extension.
+ *
+ * @param filePath - Path to check
+ * @returns Document format if detected, undefined otherwise
+ */
+function detectDocumentFormat(filePath: string): DocumentFormat | undefined {
+  const ext = path.extname(filePath).toLowerCase()
+  return DOCUMENT_EXTENSIONS[ext]
+}
+
+/**
+ * Reads a file as an image and returns an ImageBlock.
+ *
+ * @param filePath - Path to the image file
+ * @param format - Image format
+ * @returns ImageBlock containing the image data
+ */
+async function readAsImage(filePath: string, format: ImageFormat): Promise<ImageBlock> {
+  await checkFileSize(filePath, DEFAULT_MAX_BINARY_FILE_SIZE)
+  const bytes = await fs.readFile(filePath)
+  return new ImageBlock({
+    format,
+    source: { bytes: new Uint8Array(bytes) },
+  })
+}
+
+/**
+ * Reads a file as a document and returns a DocumentBlock.
+ *
+ * @param filePath - Path to the document file
+ * @param format - Document format
+ * @returns DocumentBlock containing the document data
+ */
+async function readAsDocument(filePath: string, format: DocumentFormat): Promise<DocumentBlock> {
+  await checkFileSize(filePath, DEFAULT_MAX_BINARY_FILE_SIZE)
+  const bytes = await fs.readFile(filePath)
+  const ext = path.extname(filePath).toLowerCase()
+  const baseName = path.basename(filePath, ext)
+  return new DocumentBlock({
+    name: baseName,
+    format,
+    source: { bytes: new Uint8Array(bytes) },
+  })
+}
+
+/**
  * Handles the view command.
+ * For image files, returns an ImageBlock.
+ * For document files, returns a DocumentBlock.
+ * For text files, returns formatted text with line numbers.
  */
 async function handleView(
   filePath: string,
   viewRange: [number, number] | undefined,
   fileReader: IFileReader
-): Promise<string> {
+): Promise<string | ImageBlock | DocumentBlock> {
   validatePath('view', filePath)
 
   const exists = await fileExists(filePath)
@@ -229,10 +307,27 @@ async function handleView(
     return await listDirectory(filePath)
   }
 
-  // Check file size before reading
+  // Detect image format
+  const imageFormat = detectImageFormat(filePath)
+  if (imageFormat) {
+    if (viewRange) {
+      throw new Error('The `view_range` parameter is not allowed for image files.')
+    }
+    return await readAsImage(filePath, imageFormat)
+  }
+
+  // Detect document format
+  const documentFormat = detectDocumentFormat(filePath)
+  if (documentFormat) {
+    if (viewRange) {
+      throw new Error('The `view_range` parameter is not allowed for document files.')
+    }
+    return await readAsDocument(filePath, documentFormat)
+  }
+
+  // Text file - check size and read as text
   await checkFileSize(filePath)
 
-  // Read file content - only if not a directory
   const fileContent = await fileReader.read(filePath)
 
   let initLine = 1
@@ -241,7 +336,7 @@ async function handleView(
   if (viewRange) {
     const lines = fileContent.split('\n')
     const nLines = lines.length
-    let [start, end] = viewRange
+    const [start, end] = viewRange
 
     // Validate range
     if (start < 1 || start > nLines) {

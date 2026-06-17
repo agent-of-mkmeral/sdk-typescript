@@ -503,3 +503,161 @@ describe('fileEditor tool', () => {
     })
   })
 })
+
+// --- Multimodal view tests (image/document support) ---
+import { Buffer } from 'buffer'
+import { ImageBlock, DocumentBlock } from '../../../types/media.js'
+
+describe('fileEditor tool - multimodal view', () => {
+  let testDir: string
+  let context: ToolContext
+
+  const createFreshContext = (): { context: ToolContext } => {
+    const agent = createMockAgent()
+    const toolContext: ToolContext = {
+      toolUse: {
+        name: 'fileEditor',
+        toolUseId: 'test-id',
+        input: {},
+      },
+      agent,
+      invocationState: {},
+    }
+    return { context: toolContext }
+  }
+
+  const createTestFile = async (filename: string, content: string | Buffer): Promise<string> => {
+    const filePath = path.join(testDir, filename)
+    const dir = path.dirname(filePath)
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(filePath, content)
+    return filePath
+  }
+
+  beforeEach(async () => {
+    testDir = path.join(tmpdir(), `file-editor-multimodal-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await fs.mkdir(testDir, { recursive: true })
+    const fresh = createFreshContext()
+    context = fresh.context
+  })
+
+  afterEach(async () => {
+    try {
+      await fs.rm(testDir, { recursive: true, force: true })
+    } catch {
+      // Ignore cleanup errors
+    }
+  })
+
+  describe('image files', () => {
+    it('returns ImageBlock for PNG files', async () => {
+      const pngBytes = Buffer.from(
+        '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489' +
+          '0000000a49444154789c626000000002000198e7399f0000000049454e44ae426082',
+        'hex'
+      )
+      const filePath = await createTestFile('test.png', pngBytes)
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(result).toBeInstanceOf(ImageBlock)
+      expect((result as unknown as ImageBlock).format).toBe('png')
+      expect((result as unknown as ImageBlock).source.type).toBe('imageSourceBytes')
+    })
+
+    it('returns ImageBlock for JPEG files', async () => {
+      const jpegBytes = Buffer.from('ffd8ffe000104a46494600010100000100010000ffd9', 'hex')
+      const filePath = await createTestFile('photo.jpg', jpegBytes)
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(result).toBeInstanceOf(ImageBlock)
+      expect((result as unknown as ImageBlock).format).toBe('jpeg')
+    })
+
+    it('returns ImageBlock for GIF files', async () => {
+      const gifBytes = Buffer.from('474946383961', 'hex')
+      const filePath = await createTestFile('anim.gif', gifBytes)
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(result).toBeInstanceOf(ImageBlock)
+      expect((result as unknown as ImageBlock).format).toBe('gif')
+    })
+
+    it('returns ImageBlock for WebP files', async () => {
+      const webpBytes = Buffer.from('524946462400000057454250', 'hex')
+      const filePath = await createTestFile('image.webp', webpBytes)
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(result).toBeInstanceOf(ImageBlock)
+      expect((result as unknown as ImageBlock).format).toBe('webp')
+    })
+
+    it('throws when view_range is provided for image files', async () => {
+      const pngBytes = Buffer.from('89504e470d0a1a0a', 'hex')
+      const filePath = await createTestFile('test.png', pngBytes)
+      await expect(fileEditor.invoke({ command: 'view', path: filePath, view_range: [1, 5] }, context)).rejects.toThrow(
+        'view_range'
+      )
+    })
+  })
+
+  describe('document files', () => {
+    it('returns DocumentBlock for PDF files', async () => {
+      const pdfContent = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF')
+      const filePath = await createTestFile('report.pdf', pdfContent)
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(result).toBeInstanceOf(DocumentBlock)
+      expect((result as unknown as DocumentBlock).format).toBe('pdf')
+      expect((result as unknown as DocumentBlock).name).toBe('report')
+      expect((result as unknown as DocumentBlock).source.type).toBe('documentSourceBytes')
+    })
+
+    it('returns DocumentBlock for CSV files', async () => {
+      const filePath = await createTestFile('data.csv', 'name,age\nAlice,30')
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(result).toBeInstanceOf(DocumentBlock)
+      expect((result as unknown as DocumentBlock).format).toBe('csv')
+      expect((result as unknown as DocumentBlock).name).toBe('data')
+    })
+
+    it('returns DocumentBlock for DOCX files', async () => {
+      const filePath = await createTestFile('doc.docx', Buffer.from('PK\x03\x04'))
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(result).toBeInstanceOf(DocumentBlock)
+      expect((result as unknown as DocumentBlock).format).toBe('docx')
+    })
+
+    it('returns DocumentBlock for XLSX files', async () => {
+      const filePath = await createTestFile('sheet.xlsx', Buffer.from('PK\x03\x04'))
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(result).toBeInstanceOf(DocumentBlock)
+      expect((result as unknown as DocumentBlock).format).toBe('xlsx')
+    })
+
+    it('throws when view_range is provided for document files', async () => {
+      const filePath = await createTestFile('report.pdf', Buffer.from('%PDF-1.4'))
+      await expect(fileEditor.invoke({ command: 'view', path: filePath, view_range: [1, 5] }, context)).rejects.toThrow(
+        'view_range'
+      )
+    })
+  })
+
+  describe('text files (non-document extensions)', () => {
+    it('still returns text with line numbers for .py files', async () => {
+      const filePath = await createTestFile('script.py', 'print("hello")')
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(typeof result).toBe('string')
+      expect(result).toContain('print("hello")')
+      expect(result).toContain("Here's the result of running `cat -n`")
+    })
+
+    it('still returns text with line numbers for .ts files', async () => {
+      const filePath = await createTestFile('app.ts', 'const x = 1')
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(typeof result).toBe('string')
+      expect(result).toContain('const x = 1')
+    })
+
+    it('still returns text with line numbers for .json files', async () => {
+      const filePath = await createTestFile('config.json', '{"key": "value"}')
+      const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+      expect(typeof result).toBe('string')
+      expect(result).toContain('"key": "value"')
+    })
+  })
+})
